@@ -82,9 +82,11 @@ def _convert_attention_mask(attn_mask, dtype):
     Returns:
         Tensor: A Tensor with shape same as input `attn_mask`, with data type `dtype`.
     """
+    # 生成attention mask
     if attn_mask is not None and attn_mask.dtype != dtype:
         attn_mask_dtype = convert_dtype(attn_mask.dtype)
         if attn_mask_dtype == 'bool' or 'int' in attn_mask_dtype:
+            # 将mask位置变成-1
             attn_mask = (paddle.cast(attn_mask, dtype) - 1.0) * 1e9
         else:
             attn_mask = paddle.cast(attn_mask, dtype)
@@ -146,16 +148,19 @@ class MultiHeadAttention(Layer):
                  weight_attr=None,
                  bias_attr=None):
         super(MultiHeadAttention, self).__init__()
+        # 词嵌入维度dmodel
         self.embed_dim = embed_dim
+        # 如果输入了dk或dv，就使用，否则使用词嵌入维度
         self.kdim = kdim if kdim is not None else embed_dim
         self.vdim = vdim if vdim is not None else embed_dim
+        # 注意力头的数量h
         self.num_heads = num_heads
         self.dropout = dropout
         self.need_weights = need_weights
-
+        # 多头注意力每个头的维度是dmodel/h
         self.head_dim = embed_dim // num_heads
         assert self.head_dim * num_heads == self.embed_dim, "embed_dim must be divisible by num_heads"
-
+        # Q,K,V,O矩阵，论文中使用的都是dmodel，这里的参数量是4d²
         self.q_proj = Linear(
             embed_dim, embed_dim, weight_attr, bias_attr=bias_attr)
         self.k_proj = Linear(
@@ -202,18 +207,22 @@ class MultiHeadAttention(Layer):
                 and `[batch_size, n_head, sequence_length, d_value]` separately, \
                 and their data types are same as inputs.
         """
+        计算q
         q = self.q_proj(query)
+        # 分头
         q = tensor.reshape(x=q, shape=[0, 0, self.num_heads, self.head_dim])
         q = tensor.transpose(x=q, perm=[0, 2, 1, 3])
 
         if isinstance(cache, self.StaticCache):
             # for encoder-decoder attention in inference and has cached
+            # 如果这里是交互注意力，则把encoder输出的kv拿到这里
             k, v = cache.k, cache.v
         else:
             k, v = self.compute_kv(key, value)
 
         if isinstance(cache, self.Cache):
             # for decoder self-attention in inference
+            # 如果是decoder推理，这里需要每生成出一个词把k,v添加到cache里面
             k = tensor.concat([cache.k, k], axis=2)
             v = tensor.concat([cache.v, v], axis=2)
             cache = self.Cache(k, v)
@@ -244,8 +253,10 @@ class MultiHeadAttention(Layer):
                 both are `[batch_size, num_heads, sequence_length, embed_dim // num_heads]`, \
                 and their data types are same as inputs.
         """
+        # 计算k,v
         k = self.k_proj(key)
         v = self.v_proj(value)
+        # 分头
         k = tensor.reshape(x=k, shape=[0, 0, self.num_heads, self.head_dim])
         k = tensor.transpose(x=k, perm=[0, 2, 1, 3])
         v = tensor.reshape(x=v, shape=[0, 0, self.num_heads, self.head_dim])
@@ -302,9 +313,11 @@ class MultiHeadAttention(Layer):
             namedtuple: an instance of `Cache` or `StaticCache` accordingly.
         """
         if type == MultiHeadAttention.StaticCache:  # static_kv
+            # 解码过程使用的编码器输出的k,v
             k, v = self.compute_kv(key, value)
             return self.StaticCache(k, v)
         elif value is None:  # incremental_state
+            # 解码过程使用的k,v
             k = layers.fill_constant_batch_size_like(
                 input=key,
                 shape=[-1, self.num_heads, 0, self.head_dim],
@@ -372,9 +385,11 @@ class MultiHeadAttention(Layer):
                 reserves tensors concatanating raw tensors with intermediate \
                 results of current query.
         """
+        # 如果不是交互注意力，则q,k,v是一个输入
         key = query if key is None else key
         value = query if value is None else value
         # compute q ,k ,v
+        
         if cache is None:
             q, k, v = self._prepare_qkv(query, key, value, cache)
         else:
@@ -382,12 +397,15 @@ class MultiHeadAttention(Layer):
 
         # scale dot product attention
         # TODO(guosheng): use tensor.matmul, however it doesn't support `alpha`
+        # 计算自注意力
         product = layers.matmul(
             x=q, y=k, transpose_y=True, alpha=self.head_dim**-0.5)
         if attn_mask is not None:
             # Support bool or int mask
             attn_mask = _convert_attention_mask(attn_mask, product.dtype)
+            # 点积结果被mask的部分变成很大的负数
             product = product + attn_mask
+        # softmax计算权重
         weights = F.softmax(product)
         if self.dropout:
             weights = F.dropout(
@@ -395,14 +413,16 @@ class MultiHeadAttention(Layer):
                 self.dropout,
                 training=self.training,
                 mode="upscale_in_train")
-
+        # 计算单个头的attention
         out = tensor.matmul(weights, v)
 
         # combine heads
+        # 把多个头合在一起
         out = tensor.transpose(out, perm=[0, 2, 1, 3])
         out = tensor.reshape(x=out, shape=[0, 0, out.shape[2] * out.shape[3]])
 
         # project to output
+        # 计算输出
         out = self.out_proj(out)
 
         outs = [out]
@@ -499,11 +519,13 @@ class TransformerEncoderLayer(Layer):
             dropout=attn_dropout,
             weight_attr=weight_attrs[0],
             bias_attr=bias_attrs[0])
+        # 前馈神经网络，两个4d²一共8d²
         self.linear1 = Linear(
             d_model, dim_feedforward, weight_attrs[1], bias_attr=bias_attrs[1])
         self.dropout = Dropout(act_dropout, mode="upscale_in_train")
         self.linear2 = Linear(
             dim_feedforward, d_model, weight_attrs[1], bias_attr=bias_attrs[1])
+        # 使用Layer norm
         self.norm1 = LayerNorm(d_model)
         self.norm2 = LayerNorm(d_model)
         self.dropout1 = Dropout(dropout, mode="upscale_in_train")
@@ -543,24 +565,28 @@ class TransformerEncoderLayer(Layer):
                 `MultiHeadAttention.forward` for more details.
         """
         src_mask = _convert_attention_mask(src_mask, src.dtype)
-
+        # 残差连接
         residual = src
+        # 一般是add后再norm
         if self.normalize_before:
             src = self.norm1(src)
         # Add cache for encoder for the usage like UniLM
+        # 计算self attention
         if cache is None:
             src = self.self_attn(src, src, src, src_mask)
         else:
             src, incremental_cache = self.self_attn(src, src, src, src_mask,
                                                     cache)
-
+        # 计算残差连接
         src = residual + self.dropout1(src)
+        # Layer norm
         if not self.normalize_before:
             src = self.norm1(src)
-
+        # 第二块残差连接
         residual = src
         if self.normalize_before:
             src = self.norm2(src)
+        # 经过两层全连接
         src = self.linear2(self.dropout(self.activation(self.linear1(src))))
         src = residual + self.dropout2(src)
         if not self.normalize_before:
@@ -619,6 +645,7 @@ class TransformerEncoder(Layer):
 
     def __init__(self, encoder_layer, num_layers, norm=None):
         super(TransformerEncoder, self).__init__()
+        # 这里其它层的配置要与第一次保持一致
         self.layers = LayerList([(encoder_layer if i == 0 else
                                   type(encoder_layer)(**encoder_layer._config))
                                  for i in range(num_layers)])
@@ -663,6 +690,7 @@ class TransformerEncoder(Layer):
 
         output = src
         new_caches = []
+        # 依次计算每一层
         for i, mod in enumerate(self.layers):
             if cache is None:
                 output = mod(output, src_mask=src_mask)
@@ -861,17 +889,21 @@ class TransformerDecoderLayer(Layer):
                 See `MultiHeadAttention.gen_cache` and `MultiHeadAttention.forward` \
                 for more details.
         """
+        # decoder输入的mask
         tgt_mask = _convert_attention_mask(tgt_mask, tgt.dtype)
+        # encoder输出的mask
         memory_mask = _convert_attention_mask(memory_mask, memory.dtype)
-
+        # 残差
         residual = tgt
         if self.normalize_before:
             tgt = self.norm1(tgt)
+        # 计算decoder的遮掩自注意力
         if cache is None:
             tgt = self.self_attn(tgt, tgt, tgt, tgt_mask, None)
         else:
             tgt, incremental_cache = self.self_attn(tgt, tgt, tgt, tgt_mask,
                                                     cache[0])
+        # add and norm
         tgt = residual + self.dropout1(tgt)
         if not self.normalize_before:
             tgt = self.norm1(tgt)
@@ -879,6 +911,7 @@ class TransformerDecoderLayer(Layer):
         residual = tgt
         if self.normalize_before:
             tgt = self.norm2(tgt)
+        # 计算交互注意力，kv来自encoder输出
         if cache is None:
             tgt = self.cross_attn(tgt, memory, memory, memory_mask, None)
         else:
@@ -891,6 +924,7 @@ class TransformerDecoderLayer(Layer):
         residual = tgt
         if self.normalize_before:
             tgt = self.norm3(tgt)
+        # 前馈神经网络
         tgt = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
         tgt = residual + self.dropout3(tgt)
         if not self.normalize_before:
