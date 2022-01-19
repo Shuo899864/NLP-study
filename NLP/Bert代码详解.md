@@ -1,18 +1,4 @@
 ```
-# Copyright (c) 2020 PaddlePaddle Authors. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 import paddle
 import paddle.nn as nn
 import paddle.nn.functional as F
@@ -46,27 +32,32 @@ class BertEmbeddings(Layer):
                  max_position_embeddings=512,
                  type_vocab_size=16):
         super(BertEmbeddings, self).__init__()
+        # 词嵌入
         self.word_embeddings = nn.Embedding(vocab_size, hidden_size)
+        # 位置嵌入
         self.position_embeddings = nn.Embedding(max_position_embeddings,
                                                 hidden_size)
+        # segment嵌入                                        
         self.token_type_embeddings = nn.Embedding(type_vocab_size, hidden_size)
         self.layer_norm = nn.LayerNorm(hidden_size)
         self.dropout = nn.Dropout(hidden_dropout_prob)
 
     def forward(self, input_ids, token_type_ids=None, position_ids=None):
+        # 如果没有传入position_id，用0,1,2,3……初始化
         if position_ids is None:
             ones = paddle.ones_like(input_ids, dtype="int64")
             seq_length = paddle.cumsum(ones, axis=-1)
 
             position_ids = seq_length - ones
             position_ids.stop_gradient = True
+        # 如果没有传入token_type_id，用0初始化
         if token_type_ids is None:
             token_type_ids = paddle.zeros_like(input_ids, dtype="int64")
-
+        # 计算三种嵌入
         input_embedings = self.word_embeddings(input_ids)
         position_embeddings = self.position_embeddings(position_ids)
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
-
+        # 相加，layer norm和dropout
         embeddings = input_embedings + position_embeddings + token_type_embeddings
         embeddings = self.layer_norm(embeddings)
         embeddings = self.dropout(embeddings)
@@ -87,6 +78,7 @@ class BertPooler(Layer):
     def forward(self, hidden_states):
         # We "pool" the model by simply taking the hidden state corresponding
         # to the first token.
+        # 取第一个token的输出作为句子的全局表示
         first_token_tensor = hidden_states[:, 0]
         pooled_output = self.dense(first_token_tensor)
         if self.pool_act == "tanh":
@@ -102,7 +94,7 @@ class BertPretrainedModel(PretrainedModel):
     loading pretrained models.
     See :class:`~paddlenlp.transformers.model_utils.PretrainedModel` for more details.
     """
-
+    # BERT基类，主要提供了模型的配置信息、预训练信息和初始化函数
     model_config_file = "model_config.json"
     pretrained_init_configuration = {
         "bert-base-uncased": {
@@ -310,6 +302,7 @@ class BertPretrainedModel(PretrainedModel):
         if isinstance(layer, (nn.Linear, nn.Embedding)):
             # In the dygraph mode, use the `set_value` to reset the parameter directly,
             # and reset the `state_dict` to update parameter in static mode.
+            # 对层的参数进行正态分布的初始化
             if isinstance(layer.weight, paddle.Tensor):
                 layer.weight.set_value(
                     paddle.tensor.normal(
@@ -394,9 +387,11 @@ class BertModel(BertPretrainedModel):
         super(BertModel, self).__init__()
         self.pad_token_id = pad_token_id
         self.initializer_range = initializer_range
+        # 使用刚刚定义的embedding类
         self.embeddings = BertEmbeddings(
             vocab_size, hidden_size, hidden_dropout_prob,
             max_position_embeddings, type_vocab_size)
+        # 使用transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(
             hidden_size,
             num_attention_heads,
@@ -471,7 +466,7 @@ class BertModel(BertPretrainedModel):
                 inputs = {k:paddle.to_tensor([v]) for (k, v) in inputs.items()}
                 output = model(**inputs)
         '''
-
+        # 如果input后面是0，则将其变成一个绝对值很大的负数
         if attention_mask is None:
             attention_mask = paddle.unsqueeze(
                 (input_ids == self.pad_token_id
@@ -481,11 +476,12 @@ class BertModel(BertPretrainedModel):
             if attention_mask.ndim == 2:
                 # attention_mask [batch_size, sequence_length] -> [batch_size, 1, 1, sequence_length]
                 attention_mask = attention_mask.unsqueeze(axis=[1, 2])
-
+        # 计算embedding
         embedding_output = self.embeddings(
             input_ids=input_ids,
             position_ids=position_ids,
             token_type_ids=token_type_ids)
+        # 是否输出每一个隐层状态，如果输出则每计算一层将结果压入一个列表
         if output_hidden_states:
             output = embedding_output
             encoder_outputs = []
@@ -496,8 +492,10 @@ class BertModel(BertPretrainedModel):
                 encoder_outputs[-1] = self.encoder.norm(encoder_outputs[-1])
             pooled_output = self.pooler(encoder_outputs[-1])
         else:
+        # 直接计算
             sequence_output = self.encoder(embedding_output, attention_mask)
             pooled_output = self.pooler(sequence_output)
+        # 输出是两个：整个句子的输出和CLS位置的输出
         if output_hidden_states:
             return encoder_outputs, pooled_output
         else:
@@ -559,15 +557,16 @@ class BertForQuestionAnswering(BertPretrainedModel):
                 start_logits = outputs[0]
                 end_logits = outputs[1]
         """
-
+        # 问答，bert加一层全连接，取整个句子的输出
         sequence_output, _ = self.bert(
             input_ids,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             attention_mask=attention_mask)
-
+        # 这里输出是（batch, sq_len, 2）最后一维的两个分别代表每个token是start和end的概率
         logits = self.classifier(sequence_output)
         logits = paddle.transpose(logits, perm=[2, 0, 1])
+        # 拆开
         start_logits, end_logits = paddle.unstack(x=logits, axis=0)
 
         return start_logits, end_logits
@@ -630,13 +629,13 @@ class BertForSequenceClassification(BertPretrainedModel):
                 print(logits.shape)
                 # [1, 2]
         """
-
+        # 这里取CLS的输出
         _, pooled_output = self.bert(
             input_ids,
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             attention_mask=attention_mask)
-
+        # 输出形状（batch,num_classes）
         pooled_output = self.dropout(pooled_output)
         logits = self.classifier(pooled_output)
         return logits
@@ -705,7 +704,7 @@ class BertForTokenClassification(BertPretrainedModel):
             token_type_ids=token_type_ids,
             position_ids=position_ids,
             attention_mask=attention_mask)
-
+        # 输出形状（batch, sq_len, num_classes）
         sequence_output = self.dropout(sequence_output)
         logits = self.classifier(sequence_output)
         return logits
