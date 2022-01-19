@@ -714,13 +714,14 @@ class BertLMPredictionHead(Layer):
     """
     Bert Model with a `language modeling` head on top for CLM fine-tuning.
     """
-
+    # 在预训练阶段用于MLM
     def __init__(self,
                  hidden_size,
                  vocab_size,
                  activation,
                  embedding_weights=None):
         super(BertLMPredictionHead, self).__init__()
+        
         self.transform = nn.Linear(hidden_size, hidden_size)
         self.activation = getattr(nn.functional, activation)
         self.layer_norm = nn.LayerNorm(hidden_size)
@@ -732,12 +733,14 @@ class BertLMPredictionHead(Layer):
             shape=[vocab_size], dtype=self.decoder_weight.dtype, is_bias=True)
 
     def forward(self, hidden_states, masked_positions=None):
+        # 如果提供了mask position，则只获取mask位置的输出
         if masked_positions is not None:
             hidden_states = paddle.reshape(hidden_states,
                                            [-1, hidden_states.shape[-1]])
             hidden_states = paddle.tensor.gather(hidden_states,
                                                  masked_positions)
         # gather masked tokens might be more quick
+        # 这里要先经过一个全连接+layer norm，然后再经过一层不带激活函数的全连接
         hidden_states = self.transform(hidden_states)
         hidden_states = self.activation(hidden_states)
         hidden_states = self.layer_norm(hidden_states)
@@ -799,12 +802,14 @@ class BertPretrainingHeads(Layer):
                 The scores of next sentence prediction.
                 Its data type should be float32 and its shape is [batch_size, 2].
         """
+        # 分别跑MLM和NSP
         prediction_scores = self.predictions(sequence_output, masked_positions)
         seq_relationship_score = self.seq_relationship(pooled_output)
         return prediction_scores, seq_relationship_score
 
 
 class BertForPretraining(BertPretrainedModel):
+    # 就是把model加预训练head
     """
     Bert Model with pretraining tasks on top.
     Args:
