@@ -44,4 +44,57 @@ class SkipGram(paddle.nn.Layer):
 ### fasttext
 ## TextCNN
 ## RNN/LSTM
-## Bert
+```
+import paddle.nn as nn
+import paddle.nn.functional as F
+# 使用LSTM进行文本分类
+class LSTMModel(nn.Layer):
+    def __init__(self,
+                 vocab_size,
+                 num_classes,
+                 emb_dim=128,
+                 padding_idx=0,
+                 lstm_hidden_size=198,
+                 direction='forward',
+                 lstm_layers=1,
+                 dropout_rate=0.0,
+                 pooling_type=None,
+                 fc_hidden_size=96):
+        super().__init__()
+
+        # 首先将输入word id 查表后映射成 word embedding
+        self.embedder = nn.Embedding(
+            num_embeddings=vocab_size,
+            embedding_dim=emb_dim,
+            padding_idx=padding_idx)
+
+        # 将word embedding经过LSTMEncoder变换到文本语义表征空间中
+        self.lstm_encoder = paddlenlp.seq2vec.LSTMEncoder(
+            emb_dim,
+            lstm_hidden_size,
+            num_layers=lstm_layers,
+            direction=direction,
+            dropout=dropout_rate,
+            pooling_type=pooling_type)
+
+        # LSTMEncoder.get_output_dim()方法可以获取经过encoder之后的文本表示hidden_size
+        self.fc = nn.Linear(self.lstm_encoder.get_output_dim(), fc_hidden_size)
+
+        # 最后的分类器
+        self.output_layer = nn.Linear(fc_hidden_size, num_classes)
+
+    def forward(self, text, seq_len):
+        # Shape: (batch_size, num_tokens, embedding_dim)
+        embedded_text = self.embedder(text)
+
+        # Shape: (batch_size, num_tokens, num_directions*lstm_hidden_size)
+        # num_directions = 2 if direction is 'bidirectional' else 1
+        text_repr = self.lstm_encoder(embedded_text, sequence_length=seq_len)
+
+        # Shape: (batch_size, fc_hidden_size)
+        fc_out = paddle.tanh(self.fc(text_repr))
+
+        # Shape: (batch_size, num_classes)
+        logits = self.output_layer(fc_out)
+        return logits
+```
